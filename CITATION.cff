@@ -1,0 +1,12 @@
+﻿cff-version: 1.2.0
+title: "MATLAB code for delay-induced network oscillations"
+message: "If you use this code, please cite the associated article and this repository."
+type: software
+authors:
+  - family-names: Pyrzowski
+    given-names: Jan
+  - family-names: Markiewicz
+    given-names: Marcin
+repository-code: "https://github.com/iitis/del-induced-network-oscillations"
+date-released: 2026-10-08
+license: GPL-3.0-only

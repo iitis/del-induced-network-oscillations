@@ -1,0 +1,59 @@
+﻿# OS/editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# MATLAB autosaves / generated
+*.asv
+*.m~
+*.mex*
+*.slxc
+
+# C/C++ sources and compiled artifacts excluded from the public MATLAB release
+*.c
+*.cc
+*.cpp
+*.cxx
+*.h
+*.hpp
+*.o
+*.obj
+*.so
+*.dll
+*.exe
+*.lib
+*.a
+build/
+bin/
+obj/
+Debug/
+Release/
+x64/
+cpp/
+c++/
+src_cpp/
+csrc/
+cpp_src/
+legacy_cpp/
+
+# Cluster / logs
+*.log
+*.err
+*.out
+slurm-*.out
+
+# Local scratch
+scratch/
+tmp/
+temp/
+
+# Large data excluded from GitHub
+data/*.mat
+*.mat
+
+# Local file lists
+FILELIST.txt
