@@ -10,3 +10,5 @@ authors:
 repository-code: "https://github.com/iitis/del-induced-network-oscillations"
 date-released: 2026-10-08
 license: GPL-3.0-only
+
+abstract: "MATLAB simulation and batch execution code accompanying Delay-induced network oscillations shape epileptic fast ripple activity in a computational model based on human epileptic tissue data. Scientific input states are archived separately."

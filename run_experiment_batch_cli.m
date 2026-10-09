@@ -49,6 +49,9 @@ function run_experiment_batch_cli(input_file, config_function_name)
     save(fullfile(config.output_dir, 'results_workspace.mat'), ...
         'results', 'config', '-v7.3');
 
+    if any(~[results.finished])
+        error('batch:FailedRuns', '%d batch runs failed; inspect summary and ERROR files.', nnz(~[results.finished]));
+    end
     fprintf('Batch finished.\n');
 
 end

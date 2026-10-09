@@ -11,6 +11,7 @@ function config = config_publication_example(G)
     %#ok<INUSD>
 
     config.t_run = 2;
+    config.plot = false;
     config.rec = 1;
 
     config.output_dir = 'results_publication/example_2s';

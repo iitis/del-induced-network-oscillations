@@ -3,6 +3,7 @@ function config = config_grid_lr_esr(G)
     config = struct();
 
     config.t_run = 60;
+    config.plot = false;
     config.rec = 0;
 
     config.output_dir = 'grid_lr_esr_60s';

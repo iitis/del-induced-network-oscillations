@@ -57,3 +57,12 @@ data/*.mat
 
 # Local file lists
 FILELIST.txt
+
+# Generated validation artifacts
+validation_results/
+__pycache__/
+*.pyc
+logs/
+batch_results/
+results_publication/
+grid_lr_esr_60s/

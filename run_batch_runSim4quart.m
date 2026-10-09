@@ -31,7 +31,7 @@ function results = run_batch_runSim4quart(baseG, config)
 %                                 Default: 0
 %       config.output_dir         Directory for per-run outputs and summary
 %                                 Default: 'batch_results'
-%       config.seeds              RNG seeds used as G.rand_state
+%       config.seeds              Scalar RNG seeds for independent runs
 %                                 Default: 1
 %       config.grid.lr            Values assigned to G.lr
 %                                 Default: baseG.lr
@@ -43,6 +43,7 @@ function results = run_batch_runSim4quart(baseG, config)
 %                                 Default: true
 %       config.save_recordings    Save recording arrays when rec == 1
 %                                 Default: config.rec
+%       config.plot               Enable raster plotting; default false
 %       config.verbose            Print progress information
 %                                 Default: true
 %       config.use_precomputed_rand_ext
@@ -73,11 +74,11 @@ function results = run_batch_runSim4quart(baseG, config)
         error('run_batch_runSim4quart requires baseG and config.');
     end
 
-    if ~isstruct(baseG)
+    if ~isstruct(baseG) || ~isscalar(baseG)
         error('baseG must be a struct.');
     end
 
-    if ~isstruct(config)
+    if ~isstruct(config) || ~isscalar(config)
         error('config must be a struct.');
     end
 
@@ -85,17 +86,13 @@ function results = run_batch_runSim4quart(baseG, config)
         error('config.t_run is required.');
     end
 
-    if ~isscalar(config.t_run) || ~isnumeric(config.t_run) || config.t_run <= 0
-        error('config.t_run must be a positive numeric scalar.');
-    end
+    validateattributes(config.t_run, {'numeric'}, {'scalar','real','finite','integer','positive'});
 
     if ~isfield(config, 'rec') || isempty(config.rec)
         config.rec = 0;
     end
 
-    if ~isscalar(config.rec)
-        error('config.rec must be a scalar logical or numeric value.');
-    end
+    validateattributes(config.rec, {'numeric','logical'}, {'scalar','real','finite','binary'});
     config.rec = logical(config.rec);
 
     if ~isfield(config, 'output_dir') || isempty(config.output_dir)
@@ -110,33 +107,43 @@ function results = run_batch_runSim4quart(baseG, config)
         config.seeds = 1;
     end
 
-    if ~isnumeric(config.seeds)
-        error('config.seeds must be numeric.');
-    end
+    validateattributes(config.seeds, {'numeric'}, {'vector','real','finite','integer','nonnegative','<=',double(intmax('uint32'))});
 
     if ~isfield(config, 'save_full_G') || isempty(config.save_full_G)
         config.save_full_G = true;
     end
+    validateattributes(config.save_full_G, {'numeric','logical'}, {'scalar','real','finite','binary'});
     config.save_full_G = logical(config.save_full_G);
 
     if ~isfield(config, 'save_recordings') || isempty(config.save_recordings)
         config.save_recordings = config.rec;
     end
+    validateattributes(config.save_recordings, {'numeric','logical'}, {'scalar','real','finite','binary'});
     config.save_recordings = logical(config.save_recordings);
 
     if ~isfield(config, 'verbose') || isempty(config.verbose)
         config.verbose = true;
     end
+    validateattributes(config.verbose, {'numeric','logical'}, {'scalar','real','finite','binary'});
     config.verbose = logical(config.verbose);
 
     if ~isfield(config, 'use_precomputed_rand_ext') || isempty(config.use_precomputed_rand_ext)
         config.use_precomputed_rand_ext = false;
     end
+    validateattributes(config.use_precomputed_rand_ext, {'numeric','logical'}, {'scalar','real','finite','binary'});
     config.use_precomputed_rand_ext = logical(config.use_precomputed_rand_ext);
+
+    if ~isfield(config,'plot') || isempty(config.plot), config.plot = false; end
+    validateattributes(config.plot, {'numeric','logical'}, {'scalar','real','finite','binary'});
+    if config.save_recordings && ~config.rec
+        error('batch:InvalidConfig', 'save_recordings=true requires rec=true.');
+    end
 
     if ~isfield(config, 'grid') || isempty(config.grid)
         config.grid = struct();
     end
+
+    validateattributes(config.grid, {'struct'}, {'scalar'});
 
     requiredBaseFields = {'lr', 'esr', 'sm'};
     for iField = 1:numel(requiredBaseFields)
@@ -158,9 +165,11 @@ function results = run_batch_runSim4quart(baseG, config)
         config.grid.sm = baseG.sm;
     end
 
-    if ~isnumeric(config.grid.lr) || ~isnumeric(config.grid.esr) || ~isnumeric(config.grid.sm)
-        error('config.grid.lr, config.grid.esr, and config.grid.sm must be numeric.');
-    end
+    validateattributes(config.grid.lr, {'numeric'}, {'vector','real','finite','nonnegative','<=',4000});
+    validateattributes(config.grid.esr, {'numeric'}, {'vector','real','finite','>=',0,'<=',4});
+    validateattributes(config.grid.sm, {'numeric'}, {'vector','real','finite','positive'});
+    % Validate the input once, before any dense external-drive allocation.
+    validate_network_state(baseG, config.rec);
 
     if ~exist(config.output_dir, 'dir')
         mkdir(config.output_dir);
@@ -184,6 +193,8 @@ function results = run_batch_runSim4quart(baseG, config)
         'esr', [], ...
         'sm', [], ...
         'finished', false, ...
+        'completed_requested_duration', false, ...
+        'stop_reason', '', ...
         'sim_seconds_requested', [], ...
         'sim_seconds_completed', [], ...
         'A_final', NaN, ...
@@ -225,21 +236,9 @@ function results = run_batch_runSim4quart(baseG, config)
                     G.esr = esr;
                     G.sm = sm;
                     G.rand_state = seed;
-
-                    % Optional deterministic replay mode: precompute the exact random
-                    % numbers used for externally driven stochastic spikes.
-                    % runSim4quart.m consumes G.rand_ext(:,step).
-                    if config.use_precomputed_rand_ext
-                        rand_stream = RandStream('mt19937ar','Seed',uint32(seed));
-                        G.rand_ext = rand(rand_stream, G.N, config.t_run * 4000);
-                        if config.verbose
-                            fprintf('Generated G.rand_ext: [%d x %d] (~%.3f MB)\n', ...
-                                size(G.rand_ext,1), size(G.rand_ext,2), ...
-                                numel(G.rand_ext) * 8 / 1024^2);
-                        end
-                    elseif isfield(G, 'rand_ext')
-                        G = rmfield(G, 'rand_ext');
-                    end
+                    G.rng_type = 'mt19937ar';
+                    if isfield(G,'rng_state'), G = rmfield(G,'rng_state'); end
+                    if isfield(G,'rand_ext_cursor'), G = rmfield(G,'rand_ext_cursor'); end
 
                     % Build a filesystem-safe and reasonably informative run tag.
                     run_tag = sprintf('run_%04d_lr_%g_esr_%g_sm_%g_seed_%g', ...
@@ -250,22 +249,6 @@ function results = run_batch_runSim4quart(baseG, config)
                     % Store the run name in G if downstream code uses it.
                     G.name = run_tag;
 
-                    % Verify helper indexing structures before simulation.
-                    try
-                        validate_auxiliary_fields(G);
-                    catch ME
-                        warning('Run %d failed during auxiliary-field validation: %s', run_id, ME.message);
-
-                        error_file = fullfile(config.output_dir, [run_tag, '_ERROR.mat']);
-                        save(error_file, 'ME', 'G', 'config');
-
-                        results(run_id) = fill_failed_result( ...
-                            results(run_id), run_id, seed, lr, esr, sm, ...
-                            config.t_run, error_file);
-
-                        continue
-                    end
-
                     % Keep track of the pre-existing length of G.A so that
                     % completed simulation time can be estimated correctly
                     % even when a network is resumed from a previous run.
@@ -274,16 +257,33 @@ function results = run_batch_runSim4quart(baseG, config)
                         A_length_before = numel(G.A);
                     end
 
+                    s_length_before = numel(G.s_mean);
                     % Run the simulator. Recording outputs are captured only when needed.
                     try
+                        % Optional deterministic replay mode: precompute the exact random
+                        % numbers used for externally driven stochastic spikes.
+                        % runSim4quart.m consumes G.rand_ext(:,step).
+                        if config.use_precomputed_rand_ext
+                            rand_stream = RandStream('mt19937ar','Seed',uint32(seed));
+                            G.rand_ext = rand(rand_stream, G.N, config.t_run * 4000);
+                            G.rand_ext_cursor = 1;
+                            if config.verbose
+                                fprintf('Generated G.rand_ext: [%d x %d] (~%.3f MB)\n', ...
+                                    size(G.rand_ext,1), size(G.rand_ext,2), ...
+                                    numel(G.rand_ext) * 8 / 1024^2);
+                            end
+                        elseif isfield(G, 'rand_ext')
+                            G = rmfield(G, 'rand_ext');
+                        end
+
                         if config.rec
                             [G, A1, A1e, LFP1, LFP2, LTP, LTD, ...
                                 in_degs, out_degs, dels, A1unit, ...
                                 nFFL, FFL_ratio, nBIF, BIF_ratio, ...
                                 nBIP, BIP_ratio] = ...
-                                runSim4quart(G, config.t_run, config.rec);
+                                runSim4quart(G, config.t_run, config.rec, struct('plot',config.plot));
                         else
-                            G = runSim4quart(G, config.t_run, config.rec);
+                            G = runSim4quart(G, config.t_run, config.rec, struct('plot',config.plot));
                         end
 
                         finished = true;
@@ -293,7 +293,7 @@ function results = run_batch_runSim4quart(baseG, config)
                         warning('Run %d failed during runSim4quart: %s', run_id, ME.message);
 
                         error_file = fullfile(config.output_dir, [run_tag, '_ERROR.mat']);
-                        save(error_file, 'ME', 'G', 'config');
+                        save(error_file, 'ME', 'G', 'config', '-v7.3');
 
                         results(run_id) = fill_failed_result( ...
                             results(run_id), run_id, seed, lr, esr, sm, ...
@@ -308,7 +308,7 @@ function results = run_batch_runSim4quart(baseG, config)
 
                     sim_seconds_completed = estimate_completed_seconds(G, A_length_before);
 
-                    runaway = detect_runaway(G, config.t_run, sim_seconds_completed);
+                    runaway = startsWith(G.simulation.stop_reason, 'runaway_');
 
                     results(run_id).run_id = run_id;
                     results(run_id).seed = seed;
@@ -319,16 +319,18 @@ function results = run_batch_runSim4quart(baseG, config)
                     results(run_id).sim_seconds_requested = config.t_run;
                     results(run_id).sim_seconds_completed = sim_seconds_completed;
                     results(run_id).runaway = runaway;
+                    results(run_id).completed_requested_duration = G.simulation.completed_requested_duration;
+                    results(run_id).stop_reason = G.simulation.stop_reason;
 
                     if isfield(G, 'A') && ~isempty(G.A)
                         results(run_id).A_final = G.A(end);
-                        results(run_id).A_mean = mean(G.A);
-                        results(run_id).A_max = max(G.A);
+                        results(run_id).A_mean = mean(G.A(A_length_before+1:end));
+                        results(run_id).A_max = max(G.A(A_length_before+1:end));
                     end
 
                     if isfield(G, 's_mean') && ~isempty(G.s_mean)
                         results(run_id).s_mean_final = G.s_mean(end);
-                        results(run_id).s_mean_mean = mean(G.s_mean);
+                        results(run_id).s_mean_mean = mean(G.s_mean(s_length_before+1:end));
                     end
 
                     %% ----------------------------------------------------
@@ -337,6 +339,7 @@ function results = run_batch_runSim4quart(baseG, config)
 
                     output_file = fullfile(config.output_dir, [run_tag, '.mat']);
                     results(run_id).output_file = output_file;
+                    run_metadata = results(run_id);
 
                     if config.save_full_G && config.save_recordings && config.rec
                         save(output_file, ...
@@ -344,10 +347,10 @@ function results = run_batch_runSim4quart(baseG, config)
                             'in_degs', 'out_degs', 'dels', 'A1unit', ...
                             'nFFL', 'FFL_ratio', 'nBIF', 'BIF_ratio', ...
                             'nBIP', 'BIP_ratio', ...
-                            'config', '-v7.3');
+                            'config', 'run_metadata', '-v7.3');
 
                     elseif config.save_full_G
-                        save(output_file, 'G', 'config', '-v7.3');
+                        save(output_file, 'G', 'config', 'run_metadata', '-v7.3');
 
                     elseif config.save_recordings && config.rec
                         save(output_file, ...
@@ -355,7 +358,9 @@ function results = run_batch_runSim4quart(baseG, config)
                             'in_degs', 'out_degs', 'dels', 'A1unit', ...
                             'nFFL', 'FFL_ratio', 'nBIF', 'BIF_ratio', ...
                             'nBIP', 'BIP_ratio', ...
-                            'config', '-v7.3');
+                            'config', 'run_metadata', '-v7.3');
+                    else
+                        save(output_file, 'config', 'run_metadata', '-v7.3');
                     end
 
                     if config.verbose
@@ -391,41 +396,6 @@ end
 %  Local helper functions
 %  ========================================================================
 
-function validate_auxiliary_fields(G)
-%VALIDATE_AUXILIARY_FIELDS Check auxiliary fields required by runSim4quart.
-
-    required_aux_fields = {'delays_ref', 'pre', 'aux'};
-    for iAux = 1:numel(required_aux_fields)
-        fieldName = required_aux_fields{iAux};
-        if ~isfield(G, fieldName) || isempty(G.(fieldName))
-            error('Input network state G is missing required auxiliary field G.%s.', fieldName);
-        end
-    end
-
-    if ~iscell(G.delays_ref)
-        error('G.delays_ref must be a cell array.');
-    end
-
-    if ~isequal(size(G.delays_ref), [G.N, G.D])
-        error('G.delays_ref must have size [G.N, G.D].');
-    end
-
-    if ~iscell(G.pre) || numel(G.pre) < G.Ne
-        error('G.pre must be a cell array with at least G.Ne entries.');
-    end
-
-    if ~iscell(G.aux) || numel(G.aux) < G.Ne
-        error('G.aux must be a cell array with at least G.Ne entries.');
-    end
-
-    pre_lengths = cellfun(@numel, G.pre(1:G.Ne));
-    aux_lengths = cellfun(@numel, G.aux(1:G.Ne));
-
-    if any(pre_lengths ~= aux_lengths)
-        error('G.pre and G.aux must have matching lengths for all PY cells.');
-    end
-end
-
 function result = fill_failed_result(result, run_id, seed, lr, esr, sm, t_run, output_file)
 %FILL_FAILED_RESULT Fill summary fields for a failed batch run.
 
@@ -435,6 +405,8 @@ function result = fill_failed_result(result, run_id, seed, lr, esr, sm, t_run, o
     result.esr = esr;
     result.sm = sm;
     result.finished = false;
+    result.completed_requested_duration = false;
+    result.stop_reason = 'error';
     result.sim_seconds_requested = t_run;
     result.sim_seconds_completed = NaN;
     result.runaway = false;
@@ -453,34 +425,6 @@ function sim_seconds_completed = estimate_completed_seconds(G, A_length_before)
         sim_seconds_completed = numel(G.A) - A_length_before;
     else
         sim_seconds_completed = NaN;
-    end
-
-end
-
-function runaway = detect_runaway(G, t_run, sim_seconds_completed)
-%DETECT_RUNAWAY Reconstruct the stopping logic used by runSim4quart.
-
-    runaway = false;
-
-    if ~isfield(G, 'A') || isempty(G.A)
-        return
-    end
-
-    if G.A(end) > 100
-        runaway = true;
-        return
-    end
-
-    recent_count = min(60, length(G.A));
-    recent_activity = G.A(end - recent_count + 1:end);
-
-    if mean(recent_activity) > 30
-        runaway = true;
-        return
-    end
-
-    if ~isnan(sim_seconds_completed) && sim_seconds_completed < t_run
-        runaway = true;
     end
 
 end

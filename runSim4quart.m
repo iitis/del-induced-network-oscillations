@@ -21,30 +21,30 @@ function [G,A1,A1e,LFP1,LFP2,LTP,LTD,in_degs,out_degs,dels,A1unit,nFFL,FFL_ratio
 %   G      continuation state of the network
 %   t_run  number of biological seconds to simulate
 %   rec    if true, record dense diagnostics and per-second summaries
+%   options (optional fourth argument): scalar struct with plot=false/true
 %
 % Outputs:
 %   G      updated continuation state
 %   A1,A1e,LFP1,LFP2,LTP,LTD
 %          dense quarter-step diagnostics, returned when rec == true
-if nargin == 4
-    if exist('init_rasters', 'file') ~= 2
-        error('Optional raster initialization requested, but init_rasters.m is not available.');
-    end
-    init_rasters;
+validateattributes(t_run, {'numeric'}, {'scalar','real','finite','integer','positive'});
+validateattributes(rec, {'numeric','logical'}, {'scalar','real','finite','binary'});
+options = struct('plot', false);
+if ~isempty(varargin)
+    assert(numel(varargin) == 1 && isstruct(varargin{1}) && isscalar(varargin{1}), ...
+        'simulation:InvalidOptions', 'Fourth argument must be an options struct.');
+    if isfield(varargin{1}, 'plot'), options.plot = varargin{1}.plot; end
 end
-
-
-
-
-
-try
-    defaultStream = RandStream('mt19937ar','Seed',uint32(G.rand_state));
-    RandStream.setGlobalStream(defaultStream);
-catch
-    disp(['reinitializing random number generator...'])
-    defaultStream = RandStream('mt19937ar','Seed','shuffle');
-    RandStream.setGlobalStream(defaultStream);
-end
+validateattributes(options.plot, {'numeric','logical'}, {'scalar','real','finite','binary'});
+validate_network_state(G, rec);
+if ~isfield(G, 'name'), G.name = 'network'; end
+requested_seconds = t_run;
+completed_seconds = 0;
+stop_reason = 'completed';
+defaultStream = restore_simulation_rng(G);
+previousStream = RandStream.getGlobalStream;
+restoreGlobalStream = onCleanup(@() RandStream.setGlobalStream(previousStream));
+RandStream.setGlobalStream(defaultStream);
 
 A1=[]; A1e=[]; LFP1=[]; LFP2=[]; LTP=[]; LTD=[];
 in_degs=[]; out_degs=[]; dels=[]; A1unit=[];
@@ -79,11 +79,14 @@ stop=false; tic
 % externally driven stochastic spikes. This makes repeated runs consume the
 % exact same rand_ext(:,step) columns.
 rand_ext_col = 1;
+if isfield(G,'rand_ext_cursor'), rand_ext_col = G.rand_ext_cursor; end
 use_rand_ext = isfield(G,'rand_ext') && ~isempty(G.rand_ext);
 if use_rand_ext
-    if size(G.rand_ext,1) ~= G.N
-        error('G.rand_ext must have G.N rows.');
-    end
+    validateattributes(G.rand_ext, {'numeric'}, {'real','finite','2d','>=',0,'<',1});
+    assert(size(G.rand_ext,1) == G.N, 'simulation:InvalidState', 'G.rand_ext requires N rows.');
+    validateattributes(rand_ext_col, {'numeric'}, {'scalar','real','finite','integer','positive'});
+    assert(rand_ext_col + 4000*t_run - 1 <= size(G.rand_ext,2), ...
+        'simulation:ExternalDriveExhausted', 'Not enough unconsumed columns in G.rand_ext.');
 end
 
 % The membrane equation is integrated by two half-steps per 0.25 ms bin.
@@ -204,8 +207,8 @@ while 1
                 % and current-buffer advancement for this quarter-step.
                 LFP1(tt_A1)=sum(G.I(1:G.Ne,1)./G.r(1:G.Ne));
 
-                if isnan(LFP1(tt_A1))
-                    error('NaN encountered in LFP1.');
+                if ~isfinite(LFP1(tt_A1))
+                    error('Nonfinite LFP1 encountered.');
                 end
 
                 tt_A1=tt_A1+1;
@@ -219,21 +222,9 @@ while 1
         st(G.s_ind)=1;
 
         G.STDP(:,1:G.D+1)=G.STDP(:,4001:4001+G.D);
-        %% basic plots
-        if rec && ~nargout && nargin<4
-            figure(5); clf; plot(G.firings(:,1)./4,G.firings(:,2),'.'); axis([0 1000 0 G.N]);
-            figure(4); plot(G.s_mean);
-            figure(3); plot(G.A);
-            ind=max(1,tt_A1-4000):tt_A1-1;
-            figure(6); plot([1:4000]/4,10^-5.*LFP1(ind)+LFP2(ind)); 
-        end
-        drawnow
-        %% single cell raster + population histograms
-        if nargin==4
-            if exist('plot_rasters', 'file') ~= 2
-                error('Optional raster plotting requested, but plot_rasters.m is not available.');
-            end
-            plot_rasters;
+        if options.plot
+            figure(1); plot(G.firings(:,1)./4,G.firings(:,2),'.');
+            xlim([0 1000]); drawnow;
         end
         %% recordings
         if rec
@@ -249,19 +240,23 @@ while 1
             [nFFL(tt_degs),FFL_ratio(tt_degs),nBIF(tt_degs),BIF_ratio(tt_degs),nBIP(tt_degs),BIP_ratio(tt_degs)]=motif_index(G,0);
             tt_degs=tt_degs+1;
          
-        else
-            figure(1); plot(G.firings(:,1)./4,G.firings(:,2),'.'); xlim([0 1000]); drawnow;
         end
 
         G.A=[G.A;nnz(G.firings(2:end,2)<=G.Ne)/double(G.Ne)];       % activity recording in exc population
         G.s_mean=[G.s_mean;mean(G.s(G.s_ind))];             % mean exc-exc synaptic weight recording
 
 %% sim continued
+        completed_seconds = completed_seconds + 1;
         t_run=t_run-1;
-        % runaway excitation if avg >100 spikes/sec or 60s avg > 30 spikes/sec in PYR -> break
-        if G.A(end)>100 || mean(G.A(end-min(60,length(G.A))+1:end))>30 || ~t_run     
-            stop=true; break
+        % Preserve the original runaway thresholds, including prior history.
+        if G.A(end)>100
+            stop_reason = 'runaway_instantaneous'; stop=true;
+        elseif mean(G.A(end-min(60,length(G.A))+1:end))>30
+            stop_reason = 'runaway_recent_mean'; stop=true;
+        elseif t_run == 0
+            stop=true;
         end
+        if stop, break; end
 
     end 
     
@@ -269,6 +264,25 @@ while 1
     G.t1=1;
     G.t2=G.t2+1;
 end
-G.rand_state = defaultStream.State;
-
-
+% Normalize the clock at a minute boundary for a subsequent continuation.
+if G.t1 == 61, G.t1 = 1; G.t2 = G.t2 + 1; end
+G.rng_state = defaultStream.State;
+G.rand_state = G.rng_state; % Historical field retained for existing callers.
+G.rng_type = defaultStream.Type;
+if use_rand_ext, G.rand_ext_cursor = rand_ext_col; end
+G.simulation = struct('seconds_requested', requested_seconds, ...
+    'seconds_completed', completed_seconds, ...
+    'completed_requested_duration', completed_seconds == requested_seconds, ...
+    'stop_reason', stop_reason);
+if rec
+    dense_count = 4000 * completed_seconds;
+    A1 = A1(1:dense_count,:); A1e = A1e(1:dense_count,:);
+    LFP1 = LFP1(1:dense_count,:); LFP2 = LFP2(1:dense_count,:);
+    LTP = LTP(1:dense_count,:); LTD = LTD(1:dense_count,:);
+    in_degs = in_degs(1:completed_seconds,:); out_degs = out_degs(1:completed_seconds,:);
+    dels = dels(1:completed_seconds,:); A1unit = A1unit(1:completed_seconds,:);
+    nFFL = nFFL(1:completed_seconds,:); FFL_ratio = FFL_ratio(1:completed_seconds,:);
+    nBIF = nBIF(1:completed_seconds,:); BIF_ratio = BIF_ratio(1:completed_seconds,:);
+    nBIP = nBIP(1:completed_seconds,:); BIP_ratio = BIP_ratio(1:completed_seconds,:);
+end
+end

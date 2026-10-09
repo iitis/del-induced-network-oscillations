@@ -1,171 +1,64 @@
-# MATLAB simulator for Izhikevich/STDP network dynamics
+# Running batch experiments
 
-This repository contains a standalone MATLAB implementation of a quarter-millisecond recurrent Izhikevich/STDP network simulator used in the accompanying simulations.
-
-The main simulator is:
-
-```text
-runSim4quart.m
-```
-
-Batch execution is handled by:
-
-```text
-run_batch_runSim4quart.m
-run_experiment_batch_cli.m
-submit_runSim4quart.sh
-submit_runSim4quart_batch.sh
-```
-
-## Project layout
-
-```text
-Sim4QuartMat/
-├── README.md
-├── runSim4quart.m
-├── run_batch_runSim4quart.m
-├── run_experiment_batch_cli.m
-├── submit_runSim4quart.sh
-├── submit_runSim4quart_batch.sh
-├── motif_index.m
-├── configs/
-│   └── config_publication_example.m
-├── data/
-│   └── net_config_G_only.mat
-├── docs/
-└── logs/
-```
-
-The expected input MAT-file must contain a variable named:
-
-```matlab
-G
-```
-
-The supplied example input is:
-
-```text
-data/net_config_G_only.mat
-```
-
-`G` is a continuation state for the simulator. It must already contain the auxiliary indexing fields required by `runSim4quart`, including:
-
-```matlab
-G.delays_ref
-G.pre
-G.aux
-```
-
-These fields are validated by the public batch runner but are not regenerated there. Network initialization is treated as an upstream step.
-
-## Running an example simulation
-
-From the project directory:
+See `README.md` for scope, external data and validation. Execute commands from the repository root, with the fixed input MAT available separately.
 
 ```bash
-sbatch submit_runSim4quart.sh data/net_config_G_only.mat config_publication_example
+mkdir -p logs
+MATLAB_MODULE=YOUR_MATLAB_MODULE sbatch --export=ALL --partition=YOUR_PARTITION submit_runSim4quart.sh data/net_config_G_only.mat config_publication_example
 ```
 
-The configuration function should be located in `configs/` and should return a struct named `config`.
+`submit_runSim4quart_batch.sh` is a compatibility alias using the same implementation. Both retain SLURM directives for old submission commands. Wrappers read input/config from environment variables inside MATLAB, so filenames are not interpolated into MATLAB source. Submit from the root; output directories in configs are relative to the submission working directory.
 
-Important configuration fields include:
+Replace `YOUR_MATLAB_MODULE` and `YOUR_PARTITION` with values available in your environment. Module names and scheduling policies are site specific. Set `MATLAB_MODULE` and adjust wall time, memory and partition using sbatch flags; bundled defaults are examples from the development environment. Create `logs/` before submission. The 15-minute example allocation is not a guaranteed duration for production sweeps.
 
-```matlab
-config.t_run
-config.rec
-config.output_dir
-config.seeds
-config.grid.lr
-config.grid.esr
-config.grid.sm
-config.use_precomputed_rand_ext
-```
-
-## Deterministic replay
-
-For deterministic replay of externally driven simulations, set:
-
-```matlab
-config.use_precomputed_rand_ext = true;
-```
-
-The batch runner then generates and stores:
-
-```matlab
-G.rand_ext
-```
-
-with size:
-
-```text
-G.N × (4000 * config.t_run)
-```
-
-`runSim4quart.m` consumes `G.rand_ext(:,step)` as the source of externally driven stochastic spikes. This makes repeated runs consume the same external drive.
-
-## Recording mode
-
-If:
-
-```matlab
-config.rec = 1;
-```
-
-the simulator records dense quarter-step diagnostics:
-
-```text
-A1, A1e, LFP1, LFP2, LTP, LTD
-```
-
-Since the simulator uses 4000 time bins per biological second, a run of length `t_run` seconds produces:
-
-```text
-4000 * t_run
-```
-
-dense samples.
-
-The batch runner also records per-second summaries such as activity, mean synaptic weight, degree summaries, delay summaries, and motif diagnostics.
-
-## Output files
-
-For each successful run, the runner writes one MAT-file to the configured output directory. The filename encodes the run index, parameter values, and seed.
-
-The output directory also contains:
-
-```text
-batch_summary.mat
-batch_summary.csv
-results_workspace.mat
-```
-
-Failed runs are written to dedicated `*_ERROR.mat` files and do not abort the full parameter sweep.
-
-## Checking job status on TASK
-
-Show queued and running jobs:
+Without SLURM, run directly wherever MATLAB is available:
 
 ```bash
-squeue -u $USER
+matlab -batch "run_experiment_batch_cli('data/net_config_G_only.mat','config_publication_example')"
 ```
 
-Inspect logs:
+On managed clusters, execute this command only on resources allocated according to local policy.
+
+## Configuration
+
+Configuration functions in `configs/` receive the input G and return a scalar struct:
+
+| Field | Meaning/default |
+| --- | --- |
+| `t_run` | Required positive, finite integer number of biological seconds |
+| `rec` | Record dense/per-second diagnostics; false by default |
+| `plot` | Enable raster plots independently; false by default |
+| `output_dir` | Output directory; `batch_results` by default |
+| `seeds` | Nonnegative integer seeds up to uint32 maximum; 1 by default |
+| `grid.lr`, `grid.esr`, `grid.sm` | Parameter vectors; defaults from input G |
+| `save_full_G` | Save final continuation state; true by default |
+| `save_recordings` | Save recordings; defaults to rec and requires rec=true when enabled |
+| `verbose` | Batch progress messages; true by default |
+| `use_precomputed_rand_ext` | Generate/store uniform external drive per run; false by default |
+
+Flag fields must be scalar 0/1 values. Parameter limits reflect this implementation: 0<=lr<=4000 (nonnegative derivative-decay factor), 0<=esr<=4 (0.25*esr is a probability), sm>0. These are numerical validity limits, not recommended biological parameters. Each grid combination and seed starts from an independent copy of input G.
+
+`config_publication_example` is a two-second functional check with dense recording and precomputed external drive; it is not the full paper experiment. `config_grid_lr_esr` defines 27 runs of 60 seconds without dense recordings. Use separate output directories for different experiments to avoid overwriting results.
+
+## Recordings and external drive
+
+When rec=true, dense outputs A1, A1e, LFP1, LFP2, LTP and LTD have 4000 rows per completed second. Per-second outputs include degrees, delay-conditioned weights, unit activity and motif diagnostics. With rec=false these extra arrays are absent, while G.A and G.s_mean still accumulate per-second histories.
+
+The precomputed uniform drive occupies approximately 8*N*4000*t_run bytes, in addition to states and recordings. Fresh batches reset its cursor. Direct continuation requires enough unused columns and preserves the cursor. Do not reset only the cursor and call that a replay; replay needs the original network state as well.
+
+## Outputs
+
+Successful calls save one run MAT, even with both data-saving options disabled (metadata/config only). Saved run_metadata identifies seed, parameters, completion, stopping and current-segment summary statistics. Final G is saved only if requested. If recordings are requested, arrays are trimmed to the actual completed duration.
+
+`finished=true` means the simulator returned without exception. `completed_requested_duration` and `stop_reason` distinguish duration completion from runaway termination. Undefined motif ratios and zero-variance/undefined surrogate Z scores are NaN.
+
+Batch summaries are `batch_summary.mat` and, if export succeeds, `batch_summary.csv`; the CLI also saves `results_workspace.mat`. Run-specific simulator errors are saved in `*_ERROR.mat` and remaining runs continue. Configuration/input validation errors stop before the sweep. After summaries are saved, the CLI exits with failure if any run failed. Matching output filenames are overwritten.
+
+## Job inspection
 
 ```bash
-tail -f logs/izh_batch_<JOBID>.out
-tail -f logs/izh_batch_<JOBID>.err
+squeue -u "$USER"
+tail -f logs/izh_batch_JOBID.out
 ```
 
-## Recommended workflow
-
-1. Verify that the input `G` contains the required continuation and auxiliary fields.
-2. Start from `configs/config_publication_example.m`.
-3. Create a new configuration file for each new parameter sweep.
-4. Submit using `submit_runSim4quart.sh`.
-5. Inspect `batch_summary.csv` and selected run MAT-files after completion.
-
-## Scope of this repository
-
-This repository contains the core MATLAB simulation and batch-execution pipeline.
-
-Network initialization and downstream analysis modules, including full experimental signal processing and figure-generation scripts, are treated as separate modules and may be added later.
+For validation, retain the complete `logs/izh_validation_JOBID.out` and `.err` logs, including version information and any stack traces.
