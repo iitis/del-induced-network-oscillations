@@ -48,12 +48,13 @@ Example resource requests below are provisional. Check quota, partition and
 module availability and adapt requests on TASK.
 
 ```bash
-sbatch --time=00:30:00 --mem=32G --array=1-81%4 \
-  --output="$RUN/logs/preflight_%A_%a.out" --error="$RUN/logs/preflight_%A_%a.err" \
-  campaign/submit_hourly_grid.sbatch "$RUN" preflight
+sbatch --time=00:30:00 --mem=32G \
+  --output="$RUN/logs/preflight_all_%j.out" --error="$RUN/logs/preflight_all_%j.err" \
+  campaign/submit_hourly_grid.sbatch "$RUN" preflight-all
 ```
 
-Require successful preflight for every input. This checks checkpoint structure,
+Require `PREFLIGHT: 81/81 passed`. One MATLAB session checks all inputs
+sequentially, without consuming 81 submission slots. This checks checkpoint structure,
 RNG compatibility and capacity of any stored external drive. It does not
 verify the biological meaning of the grid coordinates. Then:
 

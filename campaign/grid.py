@@ -100,11 +100,13 @@ def main():
     if [row['id'] for row in rows] != list(range(1, 82)):
         raise ValueError('Invalid manifest IDs')
     if args.action == 'verify':
-        if args.id not in range(1, 82):
+        if args.id is not None and args.id not in range(1, 82):
             parser.error('--id must be 1..81')
-        row = rows[args.id - 1]
-        if sha256(inside(Path(row['input']), PROJECT)) != row['sha256']:
-            raise ValueError('Input checksum mismatch for point {}'.format(args.id))
+        selected = rows if args.id is None else [rows[args.id - 1]]
+        for row in selected:
+            if sha256(inside(Path(row['input']), PROJECT)) != row['sha256']:
+                raise ValueError('Input checksum mismatch for point {}'.format(row['id']))
+        print('CHECKSUMS OK: {}'.format(len(selected)))
     else:
         for row in rows:
             count, state = progress(run, row)

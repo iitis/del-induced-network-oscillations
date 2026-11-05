@@ -2,13 +2,28 @@ function run_hourly_simulation()
 % Entry point for submit_hourly_grid.sbatch; the wrapper holds the point lock.
     addpath(fileparts(fileparts(mfilename('fullpath'))));
     root = getenv('CAMPAIGN_RUN');
+    mode = getenv('CAMPAIGN_MODE');
+    rows = jsondecode(fileread(fullfile(root,'manifest.json')));
+    if strcmp(mode,'preflight-all')
+        failed = [];
+        for k = 1:numel(rows)
+            try
+                preflight_input(rows(k));
+            catch err
+                failed(end+1) = rows(k).id;
+                fprintf(2,'INPUT FAILED point=%d: %s\n',rows(k).id,err.message);
+            end
+        end
+        fprintf('PREFLIGHT: %d/%d passed\n',numel(rows)-numel(failed),numel(rows));
+        assert(isempty(failed),'Failed points: %s',mat2str(failed));
+        return
+    end
     id = str2double(getenv('CAMPAIGN_ID'));
     target = str2double(getenv('CAMPAIGN_TARGET'));
     extras = str2double(getenv('CAMPAIGN_EXTRAS'));
     validateattributes(id, {'double'}, {'scalar','integer','>=',1,'<=',81});
     validateattributes(target, {'double'}, {'scalar','integer','>=',1,'<=',12});
     validateattributes(extras, {'double'}, {'scalar','binary'});
-    rows = jsondecode(fileread(fullfile(root,'manifest.json')));
     row = rows(id);
     assert(row.id == id, 'Manifest row mismatch.');
     point = fullfile(root,'points',sprintf('%03d',id));
@@ -18,13 +33,8 @@ function run_hourly_simulation()
         'legacy_init',getenv('CAMPAIGN_LEGACY_INIT'),'initial_seed',getenv('CAMPAIGN_INITIAL_SEED'));
     fprintf('Point %d (%s,%s), MATLAB %s, revision %s\n',id,row.x,row.y,version,identity.revision);
 
-    mode = getenv('CAMPAIGN_MODE');
     if strcmp(mode,'preflight') || strcmp(mode,'continuity')
-        G = prepare_grid_input(load_state(row.input),identity.legacy_init,identity.initial_seed);
-        validate_network_state(G,true);
-        restore_simulation_rng(G);
-        check_drive(G,12*3600);
-        fprintf('INPUT OK: N=%d Ne=%d t1=%d t2=%d esr=%g\n',G.N,G.Ne,G.t1,G.t2,G.esr);
+        G = preflight_input(row);
         if strcmp(mode,'continuity'), continuity(G,fullfile(root,'tmp')); end
         return
     end
@@ -86,6 +96,14 @@ function run_hourly_simulation()
             hour,meta.seconds_completed,meta.stop_reason,toc(clock),meta.recordings_bytes,meta.checkpoint_bytes);
         if ~strcmp(meta.stop_reason,'completed'), return; end
     end
+end
+
+function G = preflight_input(row)
+    G = prepare_grid_input(load_state(row.input),getenv('CAMPAIGN_LEGACY_INIT'),getenv('CAMPAIGN_INITIAL_SEED'));
+    validate_network_state(G,true);
+    restore_simulation_rng(G);
+    check_drive(G,12*3600);
+    fprintf('INPUT OK: point=%d N=%d Ne=%d t1=%d t2=%d esr=%g\n',row.id,G.N,G.Ne,G.t1,G.t2,G.esr);
 end
 
 function G = load_state(path)
