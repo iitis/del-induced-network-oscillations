@@ -29,6 +29,21 @@ Use a new directory for a different manifest or recording configuration.
 
 ## 2. Preflight and continuity
 
+The original zoom-grid initializers may have a zero STDP array with
+`2001+D` columns and no RNG state. For this known initializer format,
+export `CAMPAIGN_LEGACY_INIT=1` before submission. The runner checks the
+initial clock, zero STDP history, 8/4 refractory bins and empty firing history
+(sentinel only), then expands the buffer in memory to `4001+D`. The input MAT
+is unchanged. This is not a timestep conversion.
+
+For inputs without RNG state, export `CAMPAIGN_INITIAL_SEED` with the
+agreed integer seed. Use the same settings for preflight, continuity, pilot
+and production. An existing RNG state takes precedence; resuming a checkpoint
+never runs the initializer adapter. If `esr` is nonzero and no external drive
+is stored, the seed controls the external forcing. Using the same seed across
+points selects a shared draw sequence rather than independent streams.
+Both settings are recorded in checkpoint identity.
+
 Example resource requests below are provisional. Check quota, partition and
 module availability and adapt requests on TASK.
 

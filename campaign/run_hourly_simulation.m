@@ -14,12 +14,13 @@ function run_hourly_simulation()
     point = fullfile(root,'points',sprintf('%03d',id));
     assert(~isempty(getenv('CAMPAIGN_REVISION')), 'Use the SLURM wrapper.');
     identity = struct('input_sha256',row.sha256,'point_id',id, ...
-        'revision',getenv('CAMPAIGN_REVISION'),'matlab',version,'extras',extras);
+        'revision',getenv('CAMPAIGN_REVISION'),'matlab',version,'extras',extras, ...
+        'legacy_init',getenv('CAMPAIGN_LEGACY_INIT'),'initial_seed',getenv('CAMPAIGN_INITIAL_SEED'));
     fprintf('Point %d (%s,%s), MATLAB %s, revision %s\n',id,row.x,row.y,version,identity.revision);
 
     mode = getenv('CAMPAIGN_MODE');
     if strcmp(mode,'preflight') || strcmp(mode,'continuity')
-        G = load_state(row.input);
+        G = prepare_grid_input(load_state(row.input),identity.legacy_init,identity.initial_seed);
         validate_network_state(G,true);
         restore_simulation_rng(G);
         check_drive(G,12*3600);
@@ -49,7 +50,7 @@ function run_hourly_simulation()
         return
     end
     if isempty(hours)
-        G = load_state(row.input);
+        G = prepare_grid_input(load_state(row.input),identity.legacy_init,identity.initial_seed);
     else
         G = load_state(fullfile(point,hours(end).name,'checkpoint.mat'));
     end
